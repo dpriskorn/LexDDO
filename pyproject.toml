@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "lexddo"
+version = "0.1.0"
+description = "Script to add external identifiers for https://ordnet.dk/ddo to Danish lexemes in Wikidata."
+authors = ["Dennis Priskorn"]
+license = "GPLv3+"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+beautifulsoup4 = "^4.12.2"
+requests = "^2.31.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
