@@ -7,9 +7,13 @@ license = "GPLv3+"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = ">=3.11,<3.13"
 beautifulsoup4 = "^4.12.2"
 requests = "^2.31.0"
+pydantic = "^2.5.3"
+wikibaseintegrator = "^0.12.4"
+lxml = "^5.0.0"
+black = "^23.12.1"
 
 
 [build-system]
