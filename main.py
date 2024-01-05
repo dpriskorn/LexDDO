@@ -1,5 +1,4 @@
 import logging
-from time import sleep
 from typing import List, Dict
 
 import requests
@@ -7,10 +6,23 @@ from bs4 import BeautifulSoup, SoupStrainer
 from pydantic import BaseModel
 from requests import Session
 from wikibaseintegrator import WikibaseIntegrator
+from wikibaseintegrator.datatypes import ExternalID, Item, Time
+from wikibaseintegrator.entities import LexemeEntity
+from wikibaseintegrator.models import Qualifiers
+from wikibaseintegrator.wbi_config import config as wbconfig
 from wikibaseintegrator.wbi_helpers import execute_sparql_query
+from wikibaseintegrator.wbi_login import Login
+from urllib.parse import quote
 
-logging.basicConfig(level=logging.INFO)
+import config
+
+logging.basicConfig(level=config.loglevel)
 logger = logging.getLogger(__name__)
+wbconfig["USER_AGENT"] = config.user_agent
+
+
+class OrdnetError(BaseException):
+    pass
 
 
 class DdoMatcher(BaseModel):
@@ -21,6 +33,10 @@ class DdoMatcher(BaseModel):
         adjektiv="Q34698",
         udråbsord="Q83034",
         verbum="Q24905",
+        konjunktion="Q36484",
+        suffiks="Q102047",
+        præfiks="Q134830",
+        talord="Q63116"
     )
     session: Session = requests.Session()
 
@@ -34,10 +50,13 @@ class DdoMatcher(BaseModel):
                     wikibase:lemma ?lemma.
             FILTER NOT EXISTS {
                 ?lexeme wdt:P9529 [].
+                }
+            FILTER NOT EXISTS {
                 ?lexeme wdt:P9530 [].
             }
         }
-        limit 10
+        offset 100
+        limit 100
         """
         result = execute_sparql_query(query=query)
         self.lids = [
@@ -168,25 +187,59 @@ class DdoMatcher(BaseModel):
         else:
             raise ValueError("Element with class 'match' not found")
 
+    @staticmethod
+    def enrich_wikidata(lexeme: LexemeEntity, ):
+        # print(lexeme.get_entity_url())
+        # pprint(self.item.get_json())
+        if config.press_enter_to_continue:
+            input("press enter to upload")
+        lexeme.write(
+            summary="Adding DDO identifier with [[Wikidata:Tools/LexDDO|LexDDO]]"
+        )
+        print(lexeme.get_entity_url())
+        # if config.press_enter_to_continue:
+        #     input("press enter to continue")
+
+    @staticmethod
+    def remove_not_found_in_ddo_if_present(lexeme):
+        try:
+            not_found_in = lexeme.claims.get(property="P9660")
+            for claim in not_found_in:
+                logger.debug(claim.mainsnak.datavalue)
+                #exit()
+                if claim.mainsnak.datavalue["value"]["id"] == "Q1186741":
+                    claim.remove()
+                    print("Removed not found in -> DDO statement")
+                    input("press enter to continue")
+            # This should cause the claim to be removed
+        except KeyError:
+            pass
+        return lexeme
+
     def lookup_labels(self):
-        wbi = WikibaseIntegrator()
+        wbi = WikibaseIntegrator(
+            login=Login(user=config.user_name, password=config.bot_password)
+        )
         for lid in self.lids:
             lexeme = wbi.lexeme.get(lid)
             lemma = lexeme.lemmas.get(language="da")
             if not lemma:
                 raise ValueError("no danish lemma for this danish lexeme")
             else:
-                print(f"Working on {lemma}")
+                print(f"Working on '{lemma}'")
                 # Adding the lookup to ordnet.dk
                 ordnet_url = (
-                    f"https://ordnet.dk/ddo/quick_search?SearchableText={lemma}"
+                    f"https://ordnet.dk/ddo/quick_search?SearchableText={quote(string=str(lemma))}"
                 )
                 response = self.session.get(ordnet_url)
                 if response.status_code == 200:
                     ddo_lemma = self.get_ddo_lemma(response=response)
                     if lemma != ddo_lemma:
-                        raise ValueError(f"lemmas do not match, got lemma {ddo_lemma} from DDO")
-                    print(f"Ordnet.dk response for {lemma}:")
+                        logger.warning(f"lemmas do not match, got lemma {ddo_lemma} from DDO. "
+                                       f"These are often near matches, we skip them for now "
+                                       f"because we have not decided how to handle these yet. Skipping.")
+                        continue
+                    # print(f"Ordnet.dk response for {lemma}:")
                     logger.info(ordnet_url)
                     if self.is_single_hit_in_ddo(response=response):
                         qid = self.find_lexical_category_qid(response=response)
@@ -199,29 +252,61 @@ class DdoMatcher(BaseModel):
                                 if "mselect" not in match_url:
                                     ddo_article_id = self.get_ddo_article_id(response)
                                     print(ddo_article_id)
-                                    # todo upload ddo statement
-                                    sleep(1)
+                                    ddo_claim = ExternalID(
+                                        prop_nr="P9529",
+                                        value=ddo_article_id
+                                    )
+                                    lexeme.add_claims(claims=[ddo_claim])
+                                    lexeme = self.remove_not_found_in_ddo_if_present(lexeme)
+                                    self.enrich_wikidata(lexeme=lexeme)
                                     # exit()
                                 else:
+                                    logger.info("Idiom detected")
                                     mselect_start = match_url.find("mselect=")
                                     if mselect_start != -1:
                                         mselect_start += len("mselect=")
                                         mselect_end = match_url.find("&", mselect_start)
                                         if mselect_end == -1:
                                             mselect_end = len(match_url)
-                                        mselect_value = match_url[mselect_start:mselect_end]
-                                        print(f"mselect value: {mselect_value}")
-                                        # todo upload ddo statement
-                                        sleep(1)
-                                        # exit()
+                                        ddo_idiom_id = match_url[mselect_start:mselect_end]
+                                        print(f"mselect value: {ddo_idiom_id}")
+                                        ddo_claim = ExternalID(
+                                            prop_nr="P9530",
+                                            value=ddo_idiom_id
+                                        )
+                                        lexeme.add_claims(claims=[ddo_claim])
+                                        lexeme = self.remove_not_found_in_ddo_if_present(lexeme)
+                                        self.enrich_wikidata(lexeme=lexeme)
                                     else:
                                         raise ValueError("mselect value not found in the URL")
                             # sleep(1)
                             else:
                                 print("We don't support matching on lexemes where "
                                       "multiple exists with identical lemma and lexical category")
+                        else:
+                            print(f"Lexical categories do not match, see {ordnet_url} and {lexeme.get_entity_url()}, skipping")
+                            input("press enter to continue")
+                    else:
+                        logger.info(f"Not a single hit in DDO, see {ordnet_url}. We don't support these yet, skipping.")
                 else:
-                    print(f"Error accessing ordnet.dk for {lemma}")
+                    if response.status_code == 404:
+                        print("Got 404 from DDO, adding not found in statement")
+                        # DDO is a moving target so we add point in time to this
+                        time = Time(
+                            prop_nr="P585",
+                            time="now",
+                            precision=11
+                        )
+                        not_found_in_ddo = Item(
+                            prop_nr="P9660",
+                            value="Q1186741",
+                            qualifiers=Qualifiers().add(qualifier=time)
+                        )
+                        lexeme.add_claims(claims=[not_found_in_ddo])
+                        self.enrich_wikidata(lexeme=lexeme)
+                        input("press enter to continue")
+                    else:
+                        raise OrdnetError(f"Error accessing ordnet.dk for {lemma}, see {ordnet_url}")
 
 
 ddo = DdoMatcher()
